@@ -4,7 +4,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, QThread
 from src.backend.helpers import load_styles
-from src.backend import Compiler
+from src.backend import Compiler, Installer
 from pathlib import Path
 
 
@@ -62,23 +62,7 @@ class MainWindow(QWidget):
         self.dest_layout.addWidget(self.dest_browse_button,)
         self.dest_frame.setLayout(self.dest_layout)
 
-        # Create interface to get venv dir
-        # Frame
-        self.venv_frame = QFrame()
-
-        # Layout
-        self.venv_layout = QHBoxLayout()
-        self.venv_layout.setObjectName("venv_layout")
-        self.venv_dir_label = QLabel("Venv", self)
-        self.venv_input = QLineEdit(self)
-        self.venv_input.setPlaceholderText("Enter the path to your virtual environment if any")
-        self.venv_browse_button = QPushButton("Browse", self)
-        self.venv_layout.addWidget(self.venv_dir_label,)
-        self.venv_layout.addWidget(self.venv_input,)
-        self.venv_layout.addWidget(self.venv_browse_button,)
-        self.venv_frame.setLayout(self.venv_layout)
-
-        # Create interface to get venv dir
+        # Create interface to get entry dir
         # Frame
         self.entry_frame = QFrame()
 
@@ -100,7 +84,6 @@ class MainWindow(QWidget):
         # Add lhe controls to the main layout
         self.main_layout.addWidget(self.source_frame, alignment=Qt.AlignmentFlag.AlignCenter)
         self.main_layout.addWidget(self.entry_frame, alignment=Qt.AlignmentFlag.AlignCenter)
-        self.main_layout.addWidget(self.venv_frame, alignment=Qt.AlignmentFlag.AlignCenter)
         self.main_layout.addWidget(self.dest_frame, alignment=Qt.AlignmentFlag.AlignCenter)
         self.main_layout.addWidget(self.compile_button, alignment=Qt.AlignmentFlag.AlignCenter)
 
@@ -108,7 +91,7 @@ class MainWindow(QWidget):
         self.source_browse_button.clicked.connect(lambda: self._get_dir_path("source"))
         self.dest_browse_button.clicked.connect(lambda: self._get_dir_path("dest"))
         self.entry_browse_button.clicked.connect(lambda: self._get_file_path("entry"))
-        self.venv_browse_button.clicked.connect(lambda: self._get_dir_path("venv"))
+        
         
 
         self.compile_button.clicked.connect(self._compile)
@@ -127,9 +110,6 @@ class MainWindow(QWidget):
             elif id == "dest":
                 self.OUTPUT_DIR = dir_path
                 self.dest_input.setText(self.OUTPUT_DIR)
-            elif id == "venv":
-                self.ENV = dir_path
-                self.venv_input.setText(self.ENV)
 
     def _get_file_path(self, id) -> None:
         """Get's the entry point file"""
@@ -145,16 +125,17 @@ class MainWindow(QWidget):
                 self.entry_input.setText(self.ENTRY_POINT)
     
     def _compile(self):
-        self._prepare_compiler()
+        self._prepare_compiler("Compiler_Thread")
         if not hasattr(self, 'thread') or not self.thread.isRunning():
             self._prepare(True)
-            self.worker = Compiler(self.SOURCE_DIR, self.OUTPUT_DIR, self.ENTRY_POINT, self.ENV)
+            self.worker = Compiler(self.SOURCE_DIR, self.OUTPUT_DIR, self.ENTRY_POINT)
             
             self.worker.moveToThread(self.thread)
 
             self.thread.started.connect(self.worker.run)
             self.worker.finished.connect(lambda: self._prepare(False))
             self.worker.error.connect(self._handle_errors)
+            self.worker.finished.connect(self._install_dependencies)
             self.worker.finished.connect(self.thread.quit)
             self.worker.finished.connect(self.worker.deleteLater)
             self.thread.finished.connect(self.thread.deleteLater)
@@ -166,21 +147,33 @@ class MainWindow(QWidget):
                 "Info",
                 "Compilation is in progress"
             )
-    def _prepare_compiler(self):
+    def _prepare_compiler(self, name: str = None):
         # create a thread
-        self.thread = QThread(self)
+        self.thread: QThread = QThread(self)
+        self.thread.setObjectName(name)
         
 
     def _prepare(self, state: bool) -> None:
         self.source_browse_button.setDisabled(state)
         self.dest_browse_button.setDisabled(state)
-        self.venv_browse_button.setDisabled(state)
         self.entry_browse_button.setDisabled(state)
         self.source_input.setDisabled(state)
         self.dest_input.setDisabled(state)
-        self.venv_input.setDisabled(state)
         self.entry_input.setDisabled(state)
         self.compile_button.setDisabled(state)
+
+    def _install_dependencies(self) -> None:
+        """Install project dependencies"""
+        self._prepare_compiler("Installer_Thread")
+        self.dependencies_worker = Installer(Path(self.OUTPUT_DIR))
+
+        self.dependencies_worker.moveToThread(self.thread)
+        self.thread.started.connect(self.dependencies_worker.run)
+        self.dependencies_worker.errors.connect(self._handle_errors)
+        self.dependencies_worker.finished.connect(self.worker.deleteLater)
+        self.thread.finished.connect(self.thread.deleteLater)
+
+        self.thread.start()
 
     def _handle_errors(self, error):
         QMessageBox.warning(
@@ -188,4 +181,12 @@ class MainWindow(QWidget):
             "Error",
             f"Encountered the following errors\n{error}",
         )
+        if hasattr(self, "thread"):
+            try:
+                if hasattr(self, "worker"):
+                    self.worker.deleteLater()
+                elif hasattr(self, "dependencies_worker"):
+                    self.dependencies_worker.deleteLater()
+            except:
+                pass 
         
